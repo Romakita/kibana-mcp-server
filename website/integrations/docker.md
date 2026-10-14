@@ -1,10 +1,10 @@
 ---
-description: "A Docker image and compose file that run the server over HTTP with catalogs in PostgreSQL."
+description: "A Docker image and compose file that run the server over HTTP, protected by OpenID Connect, with catalogs in PostgreSQL."
 ---
 
 # Docker image
 
-This example builds an image that runs the server over HTTP, with catalogs in PostgreSQL. Swap the store for any other one by changing two lines.
+This example builds an image that runs the server over HTTP, with catalogs in PostgreSQL. Users authenticate with your OpenID Connect provider, so no gateway is needed. Swap the store for any other one by changing two lines.
 
 ::: warning Version
 The HTTP transport, the configuration file and the catalog stores are not part of the releases published before this documentation. Use a version of the package that includes them.
@@ -34,11 +34,16 @@ export default defineKibanaMcpConfig({
   http: {
     host: "0.0.0.0",
     port: 3000,
-    profileHeader: "x-kibana-profile",
-    authToken: process.env.KIBANA_MCP_TOKEN,
+    oidc: {
+      issuer: process.env.OIDC_ISSUER,
+      resource: process.env.MCP_PUBLIC_URL,
+      requiredScopes: ["kibana-mcp"],
+    },
   },
 });
 ```
+
+Each user gets the catalog named by the `sub` claim of their token. See [OpenID Connect authentication](../deployment/oidc) for the other options and the provider setup.
 
 A `.mjs` file loads on every supported Node.js version. A `.ts` file works too from Node.js 22.18.
 
@@ -76,7 +81,8 @@ services:
       KIBANA_URL: https://kibana.example.com
       KIBANA_USER: service-account
       KIBANA_PASSWORD: ${KIBANA_PASSWORD}
-      KIBANA_MCP_TOKEN: ${KIBANA_MCP_TOKEN}
+      OIDC_ISSUER: https://sso.example.com/realms/acme
+      MCP_PUBLIC_URL: https://kibana-mcp.example.com/mcp
       DATABASE_URL: postgres://kibana_mcp:${POSTGRES_PASSWORD}@postgres:5432/kibana_mcp
     depends_on:
       postgres:
@@ -110,9 +116,17 @@ curl -s http://127.0.0.1:3000/healthz
 ```
 
 ```bash
+curl -si http://127.0.0.1:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+The call is refused with `401` and a `WWW-Authenticate` header pointing to `https://kibana-mcp.example.com/.well-known/oauth-protected-resource/mcp`. An MCP client follows it, signs the user in with the provider, and retries with an access token:
+
+```bash
 curl -s http://127.0.0.1:3000/mcp \
-  -H "Authorization: Bearer $KIBANA_MCP_TOKEN" \
-  -H "X-Kibana-Profile: alice" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -120,7 +134,9 @@ curl -s http://127.0.0.1:3000/mcp \
 
 ## Notes
 
-- **Listening on `0.0.0.0` requires `KIBANA_MCP_TOKEN`.** The server refuses to start on a non-loopback host without a shared secret.
+- **Listening on `0.0.0.0` requires authentication.** The server refuses to start on a non-loopback host without OpenID Connect or a shared secret.
+- **The provider must be reachable at startup.** The server reads its discovery document before listening and exits if it cannot.
+- **Terminate TLS in front of the container.** `MCP_PUBLIC_URL` is the HTTPS URL clients use; the server checks it against the token audience. The compose file binds the port to the loopback interface of the host for your reverse proxy.
+- **Behind a gateway instead.** Replace `oidc` with `profileHeader: "x-kibana-profile"` and `authToken: process.env.KIBANA_MCP_TOKEN`, and let only the [gateway](./gateway) reach the port.
 - **Catalogs must outlive the container.** They live in the `catalogs` volume here. With the file store, mount a volume at the catalog path; with SQLite, at the database path.
-- **Do not publish the port publicly.** Only your [gateway](./gateway) should reach it. The compose file binds it to the loopback interface of the host.
 - **SQLite instead of PostgreSQL.** Import `stores/sqlite`, set `storeOptions: { path: "/data/catalogs.sqlite" }`, drop the `pg` install and mount a volume at `/data`.

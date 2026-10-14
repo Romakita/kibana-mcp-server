@@ -32,6 +32,16 @@ The default export may be the configuration object, or a function, possibly asyn
 | `http.path` | `string` | `--path`, `KIBANA_HTTP_PATH` | Endpoint path |
 | `http.profileHeader` | `string` | `--profile-header`, `KIBANA_HTTP_PROFILE_HEADER` | Header carrying the profile of the caller |
 | `http.authToken` | `string` | `KIBANA_HTTP_AUTH_TOKEN` | Shared secret expected as a bearer token |
+| `http.oidc.issuer` | `string` | `KIBANA_HTTP_OIDC_ISSUER` | OpenID Connect issuer protecting the endpoint |
+| `http.oidc.resource` | `string` | `KIBANA_HTTP_OIDC_RESOURCE` | Public URL of the MCP endpoint, required with `issuer` |
+| `http.oidc.audience` | `string` | `KIBANA_HTTP_OIDC_AUDIENCE` | Expected token audience, default `resource` |
+| `http.oidc.mode` | `"offline"` \| `"introspection"` | `KIBANA_HTTP_OIDC_MODE` | Token verification, default `introspection` with a client id, `offline` otherwise |
+| `http.oidc.clientId` | `string` | `KIBANA_HTTP_OIDC_CLIENT_ID` | Client used for introspection |
+| `http.oidc.clientSecret` | `string` | `KIBANA_HTTP_OIDC_CLIENT_SECRET` | Secret of that client |
+| `http.oidc.requiredScopes` | `string[]` | `KIBANA_HTTP_OIDC_REQUIRED_SCOPES` | Scopes every token must carry |
+| `http.oidc.scopesSupported` | `string[]` | `KIBANA_HTTP_OIDC_SCOPES_SUPPORTED` | Scopes advertised to clients |
+| `http.oidc.profileClaim` | `string` | `KIBANA_HTTP_OIDC_PROFILE_CLAIM` | Claim naming the caller's profile, default `sub` |
+| `http.oidc.allowInsecureRequests` | `boolean` | `KIBANA_HTTP_OIDC_ALLOW_INSECURE_REQUESTS` | Allow a non-HTTPS issuer or resource. Development only. |
 
 ## Precedence
 
@@ -42,6 +52,7 @@ Command-line flag, then environment variable, then configuration file, then buil
 - `store` requires `url`, `user` and `password`, from the file or from the environment.
 - `store` cannot be combined with `KIBANA_SOURCE_CATALOG_PATH`.
 - Without `store`, a direct connection requires an explicit `KIBANA_SOURCE_CATALOG_PATH`. Saved-profile startup uses the path stored with the profile. There is no implicit catalog path.
+- `http.oidc` excludes `http.authToken` and `http.profileHeader`, and requires named profiles.
 - A `.ts` file needs Node.js 22.18 or later. A `.mjs` file works on every supported version.
 - The package must be resolvable from the directory of the file, since the file imports it.
 

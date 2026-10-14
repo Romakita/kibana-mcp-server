@@ -6,21 +6,26 @@ description: "What the HTTP transport trusts, the safeguards built in and how cr
 
 ## What the server trusts
 
-Over HTTP the server authenticates **the gateway**, not the end user.
+Over HTTP the server authenticates either **the gateway**, with a shared secret, or **the end user**, with OpenID Connect.
 
-| Element | Role | Trusted because |
-| --- | --- | --- |
-| `Authorization: Bearer <token>` | Proves the request comes from your gateway | It matches `KIBANA_HTTP_AUTH_TOKEN` |
-| Profile header | Names the caller | The gateway set it after authenticating the caller |
+| Mode           | Element                                | Trusted because                                                                             |
+|----------------|----------------------------------------|---------------------------------------------------------------------------------------------|
+| Shared secret  | `Authorization: Bearer <token>`        | It matches `KIBANA_HTTP_AUTH_TOKEN`                                                         |
+| Shared secret  | Profile header                         | The gateway set it after authenticating the caller                                          |
+| OpenID Connect | `Authorization: Bearer <access token>` | Its signature, issuer, audience and expiration check out, or the provider says it is active |
+| OpenID Connect | Profile claim of the token             | The provider issued it                                                                      |
 
-The profile header is taken as sent. Anyone who can reach the port and knows the shared secret can act as any profile. Two consequences:
+With [OpenID Connect](./oidc), the profile comes from the token and a caller cannot pick another one. The rest of this section is about the shared secret.
+
+With the shared secret, the profile header is taken as sent. Anyone who can reach the port and knows the shared secret can act as any profile. Two consequences:
 
 - **Only the gateway should reach the server.** Bind it to the loopback interface or a private network.
 - **The gateway must overwrite the profile header**, never forward a client-supplied value.
 
 ## Safeguards built in
 
-- **No public listening without a secret.** The server refuses to start on a non-loopback host unless `KIBANA_HTTP_AUTH_TOKEN` is set.
+- **No public listening without authentication.** The server refuses to start on a non-loopback host unless `KIBANA_HTTP_AUTH_TOKEN` or `KIBANA_HTTP_OIDC_ISSUER` is set.
+- **No caller-chosen profile with OpenID Connect.** A profile header cannot be configured alongside it, and the token audience must name this endpoint.
 - **No accidental shared catalog.** Over HTTP, the server refuses to start with neither a profile header nor an explicitly named default profile.
 - **A missing profile is refused.** With a profile header configured, a request without it gets `401`.
 - **Profile names never reach a path or key as is.** They are turned into a key of lowercase letters, digits and dashes; anything else gets a digest suffix. `../../etc/passwd` becomes `etc-passwd-<digest>`.

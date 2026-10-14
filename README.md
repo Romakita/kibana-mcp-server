@@ -86,7 +86,7 @@ export default defineKibanaMcpConfig({
 kibana-mcp-server serve --http --config ./kibana.mcp.config.ts
 ```
 
-Catalogs can live in files, Redis, PostgreSQL, MongoDB, SQLite, or a store you write. The HTTP transport trusts the profile header as sent: only a gateway that has authenticated the caller should reach it.
+Catalogs can live in files, Redis, PostgreSQL, MongoDB, SQLite, or a store you write. With a shared token, the HTTP transport trusts the profile header as sent: only a gateway that has authenticated the caller should reach it. Without a gateway, set `http.oidc` instead: the server then authenticates each user against your OpenID Connect provider and reads their profile from the access token.
 
 ## Repository Codex plugin
 
@@ -100,6 +100,7 @@ Catalogs can live in files, Redis, PostgreSQL, MongoDB, SQLite, or a store you w
 | Agent plugins and skills | https://havesomecode.github.io/kibana-mcp-server/ai/agent-plugins |
 | Investigating with an agent | https://havesomecode.github.io/kibana-mcp-server/guide/investigating |
 | HTTP transport and security model | https://havesomecode.github.io/kibana-mcp-server/deployment/http |
+| OpenID Connect authentication | https://havesomecode.github.io/kibana-mcp-server/deployment/oidc |
 | Catalog stores | https://havesomecode.github.io/kibana-mcp-server/deployment/catalog-stores |
 | Integration examples (gateway, Ts.ED, Docker) | https://havesomecode.github.io/kibana-mcp-server/integrations/ |
 | Tool, CLI and configuration reference | https://havesomecode.github.io/kibana-mcp-server/reference/cli |
