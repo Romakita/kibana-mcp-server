@@ -43,7 +43,7 @@ export default defineKibanaMcpConfig({
 });
 ```
 
-Each user gets the catalog named by the `sub` claim of their token. See [OpenID Connect authentication](../deployment/oidc) for the other options and the provider setup.
+Each user gets their own catalog, named after the issuer and the `sub` claim of their token. See [OpenID Connect authentication](../deployment/oidc) for the other options and the provider setup.
 
 A `.mjs` file loads on every supported Node.js version. A `.ts` file works too from Node.js 22.18.
 

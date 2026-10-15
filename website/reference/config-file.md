@@ -40,7 +40,7 @@ The default export may be the configuration object, or a function, possibly asyn
 | `http.oidc.clientSecret` | `string` | `KIBANA_HTTP_OIDC_CLIENT_SECRET` | Secret of that client |
 | `http.oidc.requiredScopes` | `string[]` | `KIBANA_HTTP_OIDC_REQUIRED_SCOPES` | Scopes every token must carry |
 | `http.oidc.scopesSupported` | `string[]` | `KIBANA_HTTP_OIDC_SCOPES_SUPPORTED` | Scopes advertised to clients |
-| `http.oidc.profileClaim` | `string` | `KIBANA_HTTP_OIDC_PROFILE_CLAIM` | Claim naming the caller's profile, default `sub` |
+| `http.oidc.profileClaim` | `string` | `KIBANA_HTTP_OIDC_PROFILE_CLAIM` | Claim naming the caller at the issuer, default `sub`; the profile is `<issuer>#<claim value>` |
 | `http.oidc.allowInsecureRequests` | `boolean` | `KIBANA_HTTP_OIDC_ALLOW_INSECURE_REQUESTS` | Allow a non-HTTPS issuer or resource. Development only. |
 
 ## Precedence

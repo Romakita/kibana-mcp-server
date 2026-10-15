@@ -45,4 +45,4 @@ The `2025-06-18` initialization flow supports session-based GET/SSE streams and 
 
 ## OpenID Connect
 
-To authenticate end users without a gateway, protect the endpoint with your OpenID Connect provider. Each caller then gets the catalog named by a claim of their access token. See [OpenID Connect authentication](./oidc).
+To authenticate end users without a gateway, protect the endpoint with your OpenID Connect provider. Each caller then gets the catalog named after the issuer and a claim of their access token. See [OpenID Connect authentication](./oidc).
