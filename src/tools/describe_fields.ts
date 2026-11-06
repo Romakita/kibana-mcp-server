@@ -1,8 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import type { SchemaCatalog } from "../schema_catalog.js";
-import type { SourceCatalog } from "../source_catalog.js";
+import type { SchemaCatalog } from "../kibana/schema_catalog.js";
+import type { SourceCatalog } from "../kibana/source_catalog.js";
 
 export const describeFieldsInputSchema = z.object({
   source_id: z.string().min(1),
@@ -34,9 +34,10 @@ export async function executeDescribeFields(
   input: z.infer<typeof describeFieldsInputSchema>,
   sourceCatalog: Pick<SourceCatalog, "getRequiredSources">,
   schemaCatalog: SchemaCatalog,
+  callerSignal?: AbortSignal,
 ): Promise<z.infer<typeof describeFieldsOutputSchema>> {
   const [source] = sourceCatalog.getRequiredSources([input.source_id]);
-  const fields = await schemaCatalog.getFields(source);
+  const fields = await schemaCatalog.getFields(source, callerSignal);
   const filteredFields = schemaCatalog.filterFields(fields, input.query, input.limit);
 
   return {

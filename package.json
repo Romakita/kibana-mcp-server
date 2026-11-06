@@ -10,8 +10,36 @@
   },
   "type": "module",
   "main": "dist/src/mcp_entry.js",
+  "exports": {
+    ".": "./dist/src/mcp_entry.js",
+    "./config": {
+      "types": "./dist/src/config/config_file.d.ts",
+      "default": "./dist/src/config/config_file.js"
+    },
+    "./stores/ioredis": {
+      "types": "./dist/src/stores/ioredis.d.ts",
+      "default": "./dist/src/stores/ioredis.js"
+    },
+    "./stores/mongodb": {
+      "types": "./dist/src/stores/mongodb.d.ts",
+      "default": "./dist/src/stores/mongodb.js"
+    },
+    "./stores/postgres": {
+      "types": "./dist/src/stores/postgres.d.ts",
+      "default": "./dist/src/stores/postgres.js"
+    },
+    "./stores/redis": {
+      "types": "./dist/src/stores/redis.d.ts",
+      "default": "./dist/src/stores/redis.js"
+    },
+    "./stores/sqlite": {
+      "types": "./dist/src/stores/sqlite.d.ts",
+      "default": "./dist/src/stores/sqlite.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "kibana-mcp-server": "dist/src/index.js"
+    "kibana-mcp-server": "dist/src/bin/kibana-mcp-server.js"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +49,10 @@
     "dist/**",
     "plugins/kibana-log-investigation/.mcp.json",
     "plugins/kibana-log-investigation/.codex-plugin/plugin.json",
+    "plugins/kibana-log-investigation/mcp-launcher.mjs",
+    "plugins/kibana-log-investigation/dist/**",
+    "plugins/kibana-log-investigation/skills/**",
+    "skills/kibana-log-investigation/**",
     "README.md",
     "LICENSE",
     "config/sources.example.json",
@@ -30,16 +62,19 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-plugin.mjs",
     "check:types": "tsc --noEmit -p tsconfig.json",
     "lint": "biome lint .",
     "format": "biome format . --write",
     "format:check": "biome check . --linter-enabled=false",
     "check": "npm run check:types && npm run lint && npm run format:check",
     "dev": "tsx src/mcp_entry.ts",
+    "docs:dev": "vitepress dev website",
+    "docs:build": "vitepress build website",
+    "docs:preview": "vitepress preview website",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run",
-    "setup": "node dist/src/index.js setup",
+    "setup": "node dist/src/bin/kibana-mcp-server.js setup",
     "start": "node dist/src/mcp_entry.js",
     "test": "vitest run",
     "verify:release-contract": "node scripts/verify-release-contract.mjs",
@@ -49,17 +84,48 @@
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
+    "@clack/prompts": "^1.8.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "commander": "^14.0.3",
+    "oauth4webapi": "^3.8.8",
     "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "ioredis": ">=5.0.0",
+    "mongodb": "^6.0.0 || ^7.0.0",
+    "pg": "^8.0.0",
+    "redis": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "redis": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",
     "@commitlint/cli": "^20.1.0",
     "@commitlint/config-conventional": "^20.0.0",
     "@types/node": "^25.5.2",
+    "esbuild": "^0.28.2",
+    "ioredis": "^6.0.0",
+    "jose": "^6.2.12",
+    "mongodb": "^7.6.0",
+    "pg": "^8.23.0",
+    "redis": "^6.2.1",
     "semantic-release": "^25.0.1",
     "tsx": "^4.0.0",
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-llms": "^1.14.0",
     "vitest": "^4.1.3"
   }
 }

@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { verifyPluginInstall } from "./verify-plugin-install.mjs";
 
 const execFileAsync = promisify(execFile);
 const npmExecPath = process.env.npm_execpath;
@@ -20,7 +23,7 @@ const repoRoot = process.cwd();
 const mcpConfigPath = resolve(repoRoot, "plugins/kibana-log-investigation/.mcp.json");
 const packageJsonPath = resolve(repoRoot, "package.json");
 const expectedServerPath = "dist/src/mcp_entry.js";
-const expectedCliPath = "dist/src/index.js";
+const expectedCliPath = "dist/src/bin/kibana-mcp-server.js";
 
 const raw = await readFile(mcpConfigPath, "utf8");
 const config = JSON.parse(raw);
@@ -30,7 +33,7 @@ if (!server?.args?.length) {
   throw new Error("MCP config missing args for kibana-log-investigation.");
 }
 
-const entrypoint = resolve(repoRoot, server.args[0]);
+const entrypoint = resolve(repoRoot, expectedServerPath);
 
 if (!existsSync(entrypoint)) {
   throw new Error(`Expected MCP entrypoint missing: ${entrypoint}`);
@@ -57,9 +60,8 @@ if (packageJson?.scripts?.start !== `node ${expectedServerPath}`) {
   );
 }
 
-const normalizedEntrypoint = server.args[0].replace(/^[.][\\/]/, "");
-if (normalizedEntrypoint !== expectedServerPath) {
-  throw new Error(`MCP config must point to ${expectedServerPath}. Received: ${server.args[0]}`);
+if (server.command !== "node" || server.cwd !== "." || server.args[0] !== "./mcp-launcher.mjs") {
+  throw new Error("MCP config must launch the bundled runtime from the installed plugin root.");
 }
 
 const builtEntrypoint = await readFile(entrypoint, "utf8");
@@ -97,6 +99,12 @@ try {
     [npmExecPath, "install", "--ignore-scripts", "--no-audit", "--no-fund", tarballPath],
     { ...npmCommandOptions, cwd: consumerRoot },
   );
+  await verifyPluginInstall(
+    join(
+      consumerRoot,
+      "node_modules/@havesomecode/kibana-mcp-server/plugins/kibana-log-investigation",
+    ),
+  );
   const installedCli = join(
     consumerRoot,
     "node_modules",
@@ -112,6 +120,172 @@ try {
   });
   if (!helpOutput.includes("Kibana Log Investigation")) {
     throw new Error("Installed package CLI did not render the expected help output.");
+  }
+
+  const { stdout: bootstrapHelp } = await execFileAsync(
+    process.execPath,
+    [installedCli, "bootstrap", "--help"],
+    {
+      cwd: consumerRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  if (
+    !bootstrapHelp.includes("does not inspect or configure indexes") ||
+    bootstrapHelp.includes("--index")
+  ) {
+    throw new Error("Installed package CLI did not expose connection-only bootstrap help.");
+  }
+
+  const installedSkill = join(
+    consumerRoot,
+    "node_modules",
+    "@havesomecode",
+    "kibana-mcp-server",
+    "skills",
+    "kibana-log-investigation",
+    "SKILL.md",
+  );
+  if (!existsSync(installedSkill)) {
+    throw new Error("Installed package is missing the kibana-log-investigation Agent Skill.");
+  }
+
+  // Exercise asset lookup from the installed compiled layout, not the source checkout.
+  const installedSourceRoot = dirname(dirname(installedCli));
+  const { runSetupFlow } = await import(
+    pathToFileURL(join(installedSourceRoot, "setup/setup_flow.js"))
+  );
+  const { resolveProfilePaths } = await import(
+    pathToFileURL(join(installedSourceRoot, "profiles/paths.js"))
+  );
+  const answers = [
+    "example",
+    "https://kibana.example.com",
+    "verification-user",
+    "verification-secret",
+    "example",
+  ];
+  const setup = await runSetupFlow(
+    {
+      info() {},
+      async prompt() {
+        if (!answers.length) throw new Error("Installed setup requested an unexpected prompt.");
+        return answers.shift();
+      },
+      async confirm() {
+        return false;
+      },
+    },
+    {
+      cwd: consumerRoot,
+      paths: resolveProfilePaths({ KIBANA_STATE_DIR: join(installRoot, "example-state") }),
+      secretStore: {
+        async load() {
+          throw new Error("No saved verification credential.");
+        },
+        async save() {},
+        async delete() {},
+      },
+    },
+  );
+  const exampleCatalog = JSON.parse(await readFile(setup.sourceCatalogPaths[0], "utf8"));
+  if (!exampleCatalog.sources?.length)
+    throw new Error("Installed setup did not import the bundled example.");
+
+  if (process.platform !== "win32") {
+    const fakeBin = join(installRoot, "fake-bin");
+    const stateRoot = join(installRoot, "state");
+    await mkdir(fakeBin);
+    const credentialStubs = new Map([
+      [
+        "security",
+        '#!/bin/sh\ncase "$1" in\n  find-generic-password) exit 44 ;;\n  add-generic-password) IFS= read -r _secret || true; exit 0 ;;\n  delete-generic-password) exit 0 ;;\n  *) exit 2 ;;\nesac\n',
+      ],
+      [
+        "secret-tool",
+        '#!/bin/sh\ncase "$1" in\n  lookup) exit 1 ;;\n  store) IFS= read -r _secret || true; exit 0 ;;\n  clear) exit 0 ;;\n  *) exit 2 ;;\nesac\n',
+      ],
+    ]);
+    for (const [executable, stub] of credentialStubs) {
+      const executablePath = join(fakeBin, executable);
+      await writeFile(executablePath, stub, "utf8");
+      await chmod(executablePath, 0o755);
+    }
+
+    const requests = [];
+    const server = createServer((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET" && request.url === "/api/status") {
+        response.end(JSON.stringify({ status: { overall: { level: "available" } } }));
+        return;
+      }
+      response.statusCode = 500;
+      response.end(JSON.stringify({ error: "unexpected request" }));
+    });
+    await new Promise((resolvePromise, rejectPromise) => {
+      server.once("error", rejectPromise);
+      server.listen(0, "127.0.0.1", resolvePromise);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Mock Kibana server did not expose a TCP port.");
+      }
+      const { stdout: bootstrapOutput } = await execFileAsync(
+        process.execPath,
+        [
+          installedCli,
+          "bootstrap",
+          "--url",
+          `http://127.0.0.1:${address.port}`,
+          "--username",
+          "verification-user",
+          "--password-env",
+          "VERIFY_KIBANA_PASSWORD",
+          "--client",
+          "none",
+        ],
+        {
+          cwd: consumerRoot,
+          encoding: "utf8",
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            KIBANA_STATE_DIR: stateRoot,
+            VERIFY_KIBANA_PASSWORD: "verification-secret",
+            PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          },
+        },
+      );
+      if (!bootstrapOutput.includes("Bootstrap verified for profile 'default'.")) {
+        throw new Error("Installed package did not complete prompt-free bootstrap.");
+      }
+      if (!bootstrapOutput.includes("No Kibana indexes were inspected or configured.")) {
+        throw new Error("Installed package did not report an empty source catalog.");
+      }
+      const savedProfiles = JSON.parse(await readFile(join(stateRoot, "profiles.json"), "utf8"));
+      const sourcePath = savedProfiles.profiles?.[0]?.sourceCatalogPath;
+      if (!sourcePath || !existsSync(sourcePath)) {
+        throw new Error(
+          "Installed package bootstrap did not persist its generated source catalog.",
+        );
+      }
+      const sourceCatalog = JSON.parse(await readFile(sourcePath, "utf8"));
+      if (!sourceCatalog.generatedBy || sourceCatalog.sources?.length !== 0) {
+        throw new Error("Installed package bootstrap did not persist an empty managed catalog.");
+      }
+      if (JSON.stringify(requests) !== JSON.stringify(["GET /api/status"])) {
+        throw new Error(
+          `Connection-only bootstrap made unexpected requests: ${requests.join(", ")}`,
+        );
+      }
+    } finally {
+      await new Promise((resolvePromise) => server.close(resolvePromise));
+    }
   }
 } finally {
   await rm(installRoot, { recursive: true, force: true });

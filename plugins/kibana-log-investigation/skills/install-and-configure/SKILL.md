@@ -1,46 +1,63 @@
 ---
 name: install-and-configure
-description: Install the repo-scoped Kibana log investigation plugin and configure its MCP server for a local Kibana environment.
+description: Install the repo plugin with connection-only bootstrap.
 ---
 
 # Install and Configure
 
-Use this skill when the repository has been cloned locally and Codex needs to finish setup for the Kibana Log Investigation plugin.
+Build the cloned checkout before installing its Codex plugin. Public npm installs use `skills/kibana-log-investigation` instead.
 
-## Goals
+## Build and install
 
-- ensure the local MCP server can start from this repository
-- install the repo-scoped plugin from the local marketplace
-- run guided machine setup so later threads do not need manual `configure`
+1. [Resolve the installation commit](#pin-the-handoff) and verify Node.js 22+. Use `ensure-node-runtime` if missing.
+2. Run from the repository root:
 
-## Workflow
+   ```bash
+   npm install
+   npm run build
+   ```
 
-1. Ensure Node.js 22+ is available:
-   - if `node --version` is missing or older than `22`, use the `ensure-node-runtime` skill first
-2. Verify the repo has dependencies and build artifacts:
-   - if `node_modules/` is missing, run `npm install`
-   - if `dist/src/mcp_entry.js` is missing or stale, run `npm run build`
-3. In Codex, open the plugin directory for this repo and install `Kibana Log Investigation` from the repo marketplace.
-   - if the current model cannot complete the plugin install itself, guide the user through the manual Codex UI click path and continue after confirmation
-4. Restart Codex if the plugin directory does not refresh automatically.
-5. Run guided setup from the built CLI:
-   - `node ./dist/src/index.js setup`
-   - collect the environment name, Kibana base URL, username, password, and a source catalog import path
-   - prefer the bundled `config/sources.example.json` unless the user already has a better catalog file to import
-   - if the user wants more than one environment, use the built-in “add another environment” continuation instead of asking them to hand-edit env vars
-6. Let setup save secrets to the OS credential store and import the source catalog into machine-local app state.
-7. Verify the MCP is usable in Codex:
-   - discover sources
-   - run one simple query
-   - confirm later threads no longer need a manual `configure` step for the default environment
+3. Confirm `plugins/kibana-log-investigation/dist/mcp_entry.mjs` exists. Install `Kibana Log Investigation` from the repo-local Codex marketplace. The built plugin includes its runtime dependencies; it runs from its installed directory, not the checkout.
+4. Restart Codex only if the plugin directory does not refresh.
 
-## Notes
+## Save the connection
 
-- This plugin is repo-scoped and intended to be installed from a cloned checkout.
-- The human CLI runs through `node ./dist/src/index.js`.
-- The MCP stdio server runs through `node ./dist/src/mcp_entry.js`.
-- Guided setup stores non-secret profile metadata under the user’s machine-level app config directory and stores credentials in the platform credential store.
-- New threads should reuse the saved default environment automatically.
-- If operators need more than one environment in parallel, save multiple profiles during setup and select non-default ones with `KIBANA_PROFILE=<PROFILE_NAME>` on the MCP entry.
-- `KIBANA_BASE_URL` is a base prefix. Keep endpoint paths such as `/internal/search/es` in the source config instead of appending them to the base URL.
-- The repo pins Node major `22` in `.node-version`.
+1. Obtain `KIBANA_BASE_URL`, `KIBANA_USERNAME`, and `KIBANA_PASSWORD`, or safe CLI alternatives. Use the base URL prefix, without `/internal/search/es`. Never put passwords in arguments or summaries.
+2. Bootstrap without duplicate registration; do not edit client files.
+
+   ```bash
+   node dist/src/bin/kibana-mcp-server.js bootstrap --client none
+   ```
+
+   First install creates an empty catalog without inspecting indexes. Do not import the bundled example unless requested. Use `--profile NAME` for additional environments; outside the plugin, select them with `serve --profile NAME`.
+
+3. Clear connection variables from the plugin environment before reconnecting.
+
+   Bash: `unset KIBANA_BASE_URL KIBANA_USERNAME KIBANA_PASSWORD`
+
+   PowerShell: `Remove-Item Env:KIBANA_BASE_URL, Env:KIBANA_USERNAME, Env:KIBANA_PASSWORD -ErrorAction SilentlyContinue`
+
+## Select an index
+
+1. In a fresh session, call `discover`.
+2. If empty, ask for the exact index or pattern and wait. Never guess, enumerate, scan, or auto-select.
+3. Call `configure_index` with exactly that value, then `discover` again.
+
+## Fix startup before restarting again
+
+Inspect MCP startup status and sanitized stderr. Repair and reinstall a failing plugin first. Saved configuration, process startup, tools in a discussion, and backend access are separate checks.
+
+`npm run verify:entrypoint` tests the isolated packaged plugin, not native Codex or a real backend.
+
+## Pin the handoff
+
+1. Resolve a full **commit SHA** using `git rev-parse <ref>^{commit}`, or `git rev-parse HEAD` for detached installs. Use README, INSTALL, and skills from this **resolved installation commit**.
+2. Verify the commit-pinned README:
+
+   ```text
+   https://raw.githubusercontent.com/Havesomecode/kibana-mcp-server/<resolved-commit>/README.md
+   ```
+
+   In a maintained checkout: `node scripts/readme-handoff.mjs <resolved-installation-ref>`. Hand off the verified `url` and `commit`.
+
+Do not infer a Git tag from an npm version. Never substitute master on missing refs, README, or retrieval failures. The helper compares fetched bytes with Git; historical installs without it need explicit resolution and retrieval verification. It is repository-only, not an npm command.

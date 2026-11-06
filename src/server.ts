@@ -1,14 +1,14 @@
-import { McpServer } from "@modelcontextprotocol/server";
+import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 
-import { KibanaClient } from "./kibana_client.js";
-import { SchemaCatalog } from "./schema_catalog.js";
-import { SourceCatalog } from "./source_catalog.js";
+import { type KibanaClient, KibanaRequestError } from "./kibana/client.js";
+import { requireProfileRuntime, runWithProfileRuntime } from "./profiles/context.js";
+import { type ProfileRuntime, ProfileRuntimeRegistry } from "./profiles/runtime.js";
 import {
-  configureInputSchema,
-  configureOutputSchema,
-  createConfigureCallToolResult,
-  executeConfigure,
-} from "./tools/configure.js";
+  configureIndexInputSchema,
+  configureIndexOutputSchema,
+  createConfigureIndexCallToolResult,
+  executeConfigureIndex,
+} from "./tools/configure_index.js";
 import {
   createDescribeFieldsCallToolResult,
   describeFieldsInputSchema,
@@ -36,14 +36,47 @@ import {
 import type { AppConfig } from "./types.js";
 import type { ResolvedAppConfig } from "./types.js";
 
+async function withKibanaRequestDiagnostics(
+  operation: () => Promise<CallToolResult>,
+): Promise<CallToolResult> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!(error instanceof KibanaRequestError)) {
+      throw error;
+    }
+
+    return {
+      content: [{ type: "text", text: error.message }],
+      isError: true,
+      _meta: {
+        kibana_request_error: {
+          code: error.code,
+          phase: error.phase,
+          source_id: error.sourceId,
+          timeout_ms: error.timeoutMs,
+          ...(error.status === undefined ? {} : { status: error.status }),
+          ...(error.causeCode === undefined ? {} : { cause_code: error.causeCode }),
+        },
+      },
+    };
+  }
+}
+
 export interface Application {
   server: McpServer;
   handlers: {
-    configure: (input: unknown) => Promise<Awaited<ReturnType<typeof executeConfigure>>["result"]>;
-    describe_fields: (input: unknown) => Promise<Awaited<ReturnType<typeof executeDescribeFields>>>;
-    discover: (input: unknown) => ReturnType<typeof executeDiscover>;
-    filter: (input: unknown) => ReturnType<typeof executeFilter>;
-    query: (input: unknown) => ReturnType<typeof executeQuery>;
+    configure_index: (
+      input: unknown,
+      callerSignal?: AbortSignal,
+    ) => Promise<Awaited<ReturnType<typeof executeConfigureIndex>>["result"]>;
+    describe_fields: (
+      input: unknown,
+      callerSignal?: AbortSignal,
+    ) => Promise<Awaited<ReturnType<typeof executeDescribeFields>>>;
+    discover: (input: unknown) => Promise<ReturnType<typeof executeDiscover>>;
+    filter: (input: unknown, callerSignal?: AbortSignal) => ReturnType<typeof executeFilter>;
+    query: (input: unknown, callerSignal?: AbortSignal) => ReturnType<typeof executeQuery>;
   };
 }
 
@@ -52,87 +85,125 @@ export function createApplication(
   dependencies?: {
     kibanaClient?: KibanaClient;
     kibanaClientFactory?: (config: AppConfig["kibana"]) => KibanaClient;
+    configureIndexFn?: typeof executeConfigureIndex;
+    profileRegistry?: ProfileRuntimeRegistry;
+    requestProfile?: string;
   },
 ): Application {
   const server = new McpServer({
     name: "kibana-log-investigation",
     version: "0.1.0",
   });
-  const kibanaClientFactory =
-    dependencies?.kibanaClientFactory ??
-    ((config: AppConfig["kibana"]) => new KibanaClient(config));
+  const registry =
+    dependencies?.profileRegistry ??
+    new ProfileRuntimeRegistry({
+      defaultConfig: initialConfig,
+      defaultKibanaClient: dependencies?.kibanaClient,
+      kibanaClientFactory: dependencies?.kibanaClientFactory,
+    });
 
-  let activeConfig = initialConfig;
-  let sourceCatalog = activeConfig ? new SourceCatalog(activeConfig.sources) : null;
-  let kibanaClient = activeConfig
-    ? (dependencies?.kibanaClient ?? kibanaClientFactory(activeConfig.kibana))
-    : null;
-  let schemaCatalog = kibanaClient ? new SchemaCatalog(kibanaClient) : null;
-
-  function requireConfigured(): {
-    sourceCatalog: SourceCatalog;
-    kibanaClient: Pick<KibanaClient, "executeMany" | "describeFields">;
-    schemaCatalog: SchemaCatalog;
-  } {
-    if (!sourceCatalog || !kibanaClient || !schemaCatalog) {
-      throw new Error("Server is not configured. Call the 'configure' tool first.");
-    }
-
-    return { sourceCatalog, kibanaClient, schemaCatalog };
+  // The profile is resolved once per tool call, then read back through the async context.
+  async function withProfile<T>(
+    operation: (runtime: ProfileRuntime) => T | Promise<T>,
+  ): Promise<T> {
+    const runtime = await registry.resolve(dependencies?.requestProfile);
+    return runWithProfileRuntime(runtime, () => operation(runtime));
   }
 
-  const configureHandler = async (input: unknown) => {
-    const { nextConfig, result } = await executeConfigure(configureInputSchema.parse(input), {
-      sourceCatalogPath: activeConfig?.sourceCatalogPath,
-    });
-    activeConfig = {
-      ...nextConfig,
-      sourceCatalogPath: result.source_catalog_path,
-      profileName: activeConfig?.profileName,
-      sourceCatalogOrigin: activeConfig?.sourceCatalogOrigin,
-    };
-    sourceCatalog = new SourceCatalog(nextConfig.sources);
-    kibanaClient = kibanaClientFactory(nextConfig.kibana);
-    schemaCatalog = new SchemaCatalog(kibanaClient);
-    return result;
+  async function withKibanaToolDeadline<T>(
+    callerSignal: AbortSignal | undefined,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const timeoutMs = requireProfileRuntime().config.kibana.timeoutMs;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+
+    try {
+      return await operation(signal);
+    } catch (error) {
+      if (callerSignal?.aborted || !timeoutSignal.aborted) {
+        throw error;
+      }
+      const requestError = error instanceof KibanaRequestError ? error : undefined;
+      throw new KibanaRequestError(
+        "KIBANA_TIMEOUT",
+        requestError?.phase ?? "request",
+        requestError?.sourceId,
+        timeoutMs,
+        `Kibana tool call exceeded its ${timeoutMs} ms backend deadline.`,
+        error,
+        requestError?.status,
+        requestError?.causeCode,
+      );
+    }
+  }
+
+  const configureIndexHandler = async (input: unknown, callerSignal?: AbortSignal) => {
+    const configureIndexFn = dependencies?.configureIndexFn ?? executeConfigureIndex;
+    return withProfile((runtime) =>
+      withKibanaToolDeadline(callerSignal, async (signal) => {
+        const { sources, result, catalogContent } = await configureIndexFn(
+          configureIndexInputSchema.parse(input),
+          {
+            config: runtime.config,
+            kibanaClient: runtime.kibanaClient,
+            callerSignal: signal,
+          },
+        );
+        registry.replaceSources(runtime, sources, catalogContent);
+        return result;
+      }),
+    );
   };
 
-  const describeFieldsHandler = (input: unknown) =>
-    executeDescribeFields(
-      describeFieldsInputSchema.parse(input),
-      requireConfigured().sourceCatalog,
-      requireConfigured().schemaCatalog,
+  const describeFieldsHandler = (input: unknown, callerSignal?: AbortSignal) =>
+    withProfile((runtime) =>
+      withKibanaToolDeadline(callerSignal, (signal) =>
+        executeDescribeFields(
+          describeFieldsInputSchema.parse(input),
+          runtime.sourceCatalog,
+          runtime.schemaCatalog,
+          signal,
+        ),
+      ),
     );
   const discoverHandler = (input: unknown) =>
-    executeDiscover(discoverInputSchema.parse(input), requireConfigured().sourceCatalog);
-  const filterHandler = (input: unknown) =>
-    executeFilter(
-      filterInputSchema.parse(input),
-      requireConfigured().sourceCatalog,
-      requireConfigured().kibanaClient,
-      {
-        schemaCatalog: requireConfigured().schemaCatalog,
-      },
+    withProfile((runtime) =>
+      executeDiscover(discoverInputSchema.parse(input), runtime.sourceCatalog),
     );
-  const queryHandler = (input: unknown) =>
-    executeQuery(
-      queryInputSchema.parse(input),
-      requireConfigured().sourceCatalog,
-      requireConfigured().kibanaClient,
-      {
-        schemaCatalog: requireConfigured().schemaCatalog,
-      },
+  const filterHandler = (input: unknown, callerSignal?: AbortSignal) =>
+    withProfile((runtime) =>
+      withKibanaToolDeadline(callerSignal, (signal) =>
+        executeFilter(filterInputSchema.parse(input), runtime.sourceCatalog, runtime.kibanaClient, {
+          schemaCatalog: runtime.schemaCatalog,
+          callerSignal: signal,
+        }),
+      ),
+    );
+  const queryHandler = (input: unknown, callerSignal?: AbortSignal) =>
+    withProfile((runtime) =>
+      withKibanaToolDeadline(callerSignal, (signal) =>
+        executeQuery(queryInputSchema.parse(input), runtime.sourceCatalog, runtime.kibanaClient, {
+          schemaCatalog: runtime.schemaCatalog,
+          callerSignal: signal,
+        }),
+      ),
     );
 
   server.registerTool(
-    "configure",
+    "configure_index",
     {
       description:
-        "Configure the Kibana connection and logical source catalog for this server session.",
-      inputSchema: configureInputSchema,
-      outputSchema: configureOutputSchema,
+        "Configure exactly one Kibana index or index pattern after the user has explicitly named it. Never guess, list, scan, or auto-select indexes before calling this tool.",
+      inputSchema: configureIndexInputSchema,
+      outputSchema: configureIndexOutputSchema,
     },
-    async (input) => createConfigureCallToolResult(await configureHandler(input)),
+    async (input, context) =>
+      withKibanaRequestDiagnostics(async () =>
+        createConfigureIndexCallToolResult(
+          await configureIndexHandler(input, context.mcpReq.signal),
+        ),
+      ),
   );
 
   server.registerTool(
@@ -142,7 +213,12 @@ export function createApplication(
       inputSchema: describeFieldsInputSchema,
       outputSchema: describeFieldsOutputSchema,
     },
-    async (input) => createDescribeFieldsCallToolResult(await describeFieldsHandler(input)),
+    async (input, context) =>
+      withKibanaRequestDiagnostics(async () =>
+        createDescribeFieldsCallToolResult(
+          await describeFieldsHandler(input, context.mcpReq.signal),
+        ),
+      ),
   );
 
   server.registerTool(
@@ -152,7 +228,7 @@ export function createApplication(
       inputSchema: discoverInputSchema,
       outputSchema: discoverOutputSchema,
     },
-    async (input) => createDiscoverCallToolResult(discoverHandler(input)),
+    async (input) => createDiscoverCallToolResult(await discoverHandler(input)),
   );
 
   server.registerTool(
@@ -163,7 +239,10 @@ export function createApplication(
       inputSchema: filterInputSchema,
       outputSchema: filterOutputSchema,
     },
-    async (input) => createFilterCallToolResult(await filterHandler(input)),
+    async (input, context) =>
+      withKibanaRequestDiagnostics(async () =>
+        createFilterCallToolResult(await filterHandler(input, context.mcpReq.signal)),
+      ),
   );
 
   server.registerTool(
@@ -174,13 +253,16 @@ export function createApplication(
       inputSchema: queryInputSchema,
       outputSchema: queryOutputSchema,
     },
-    async (input) => createQueryCallToolResult(await queryHandler(input)),
+    async (input, context) =>
+      withKibanaRequestDiagnostics(async () =>
+        createQueryCallToolResult(await queryHandler(input, context.mcpReq.signal)),
+      ),
   );
 
   return {
     server,
     handlers: {
-      configure: configureHandler,
+      configure_index: configureIndexHandler,
       describe_fields: describeFieldsHandler,
       discover: discoverHandler,
       filter: filterHandler,

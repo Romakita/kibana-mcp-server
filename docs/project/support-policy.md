@@ -1,53 +1,58 @@
 ---
 title: Support Policy
 status: active
-updated: 2026-04-09
+updated: 2026-10-14
 ---
 
 # Support Policy
 
-## Audience
-
-This MCP is designed for operators and AI agents that need read-only access to Kibana-backed logs for investigation workflows.
+This MCP supports read-only Kibana log investigation by operators and AI agents. Kibana, Elasticsearch, and data-view writes, and automation beyond log investigation, are out of scope.
 
 ## Guaranteed Support
 
-- Node.js 22+ runtime
-- Repo-local Codex plugin install
-- `kibana_internal_search_es` and `elasticsearch_search` backends
-- Guided machine setup with saved profiles and imported source catalogs
-- Runtime configuration via `configure` plus persisted non-secret source catalogs
+| Area | Guaranteed contract |
+| --- | --- |
+| Runtime | Node.js 22+ |
+| Installation | Repo-local Codex plugin |
+| Search | `kibana_internal_search_es` and `elasticsearch_search` |
+| Connection setup | Connection-only bootstrap, saved profiles, platform credentials |
+| Guided setup | Explicitly selected hand-authored source catalogs |
+| Startup | Saved profile, or complete explicit connection plus `KIBANA_SOURCE_CATALOG_PATH` or configuration-file catalog store |
+| Source configuration | User-approved `configure_index`; no MCP tool accepts connection credentials |
+
+## Connection Setup Boundary
+
+1. Run operator-side `bootstrap` for the connection, then user-approved `configure_index` for sources. Credential-taking `configure` and unconfigured startup are intentionally retired.
+2. Select a catalog path/store explicitly for direct environment startup. No working-directory catalog is searched. Catalog JSON and existing catalog/profile files are unchanged.
+3. Bootstrap before reconnecting if startup reports `No saved Kibana connection is available. Run connection bootstrap first.` For saved profiles, leave direct connection variables unset in the server environment.
 
 ## Best-Effort Support
 
-- Fully autonomous repo-local plugin installation by prompting alone across all Codex model variants
-- Schema metadata endpoints (`kibana_data_views_fields`, `kibana_index_patterns_fields`, `elasticsearch_field_caps`)
-- Nested query features that depend on schema availability
-- Linux secure storage when a Secret Service-compatible keyring is missing or locked
+| Area | Limitation |
+| --- | --- |
+| Autonomous repo-local installation | Prompt-only completion varies by Codex model |
+| Schema metadata | `kibana_data_views_fields`, `kibana_index_patterns_fields`, `elasticsearch_field_caps` may be unavailable |
+| Nested queries | Depend on schema availability |
+| Linux secure storage | Missing or locked Secret Service-compatible keyring |
 
-Best-effort means we will investigate issues but cannot guarantee behavior across all deployments.
+We investigate best-effort issues without guaranteeing behavior across deployments.
 
 ## Known Environment Constraints
 
-- Some Codex model variants are less reliable at completing repo-local plugin installation without a manual Codex UI step. The supported fallback is to install the plugin manually from the local marketplace, then continue with MCP configuration.
-- Some Kibana deployments proxy or block schema metadata endpoints. In those cases, schema-aware features may be unavailable.
-- `KIBANA_BASE_URL` must be the Kibana base prefix, not a full search endpoint such as `/internal/search/es`.
-- Linux secure storage depends on a Secret Service-compatible keyring being available and unlocked.
-- If you run staging and production side by side, prefer saved machine profiles plus `KIBANA_PROFILE` selection. If you stay on env bootstrap, keep `KIBANA_SOURCE_CATALOG_PATH` distinct per entry so runtime-persisted sources do not overwrite each other.
-- Credentials are not persisted to repo-local files or tracked config. Guided setup stores them in the platform credential store.
+1. If autonomous plugin installation stalls, install manually from the local marketplace, then continue MCP configuration. This is a supported fallback.
+2. Treat search-backend field sampling as heuristic, not authoritative. It applies only when all known Kibana data-view/index-pattern metadata endpoints return `404`, never to direct Elasticsearch field-capability errors. Schema-dependent features may remain unavailable.
+3. Set `KIBANA_BASE_URL` to the Kibana base prefix, not a search endpoint such as `/internal/search/es`.
+4. Keep Linux's Secret Service-compatible keyring available and unlocked. Bootstrap and guided setup store credentials in the platform credential store, never repo-local files or tracked config.
+5. Separate staging and production with saved profiles and `KIBANA_PROFILE`. For direct environment startup, set a distinct `KIBANA_SOURCE_CATALOG_PATH` per entry to avoid mixing managed sources.
 
 ## Security Reporting
 
-If you find a security issue, report it through the process documented in `SECURITY.md`.
+Report security issues through `SECURITY.md`.
 
 ## Response Expectations
 
-- Critical security reports: acknowledge within 3 business days.
-- Non-security issues: response cadence depends on maintainer availability.
-- Release notes and shipped version history are published through GitHub Releases and npm, not through committed changelog updates in the repository.
-- Questions about the current shipped version should be answered from npm or GitHub Releases, not from the `package.json` version committed in git.
-
-## Out of Scope
-
-- Writes to Kibana, Elasticsearch, or data views
-- Workflow-specific automation beyond log investigation
+| Request | Expectation |
+| --- | --- |
+| Critical security report | Acknowledge within 3 business days |
+| Non-security issue | Depends on maintainer availability |
+| Release notes or shipped versions | Read GitHub Releases or npm, not committed changelogs or the Git `package.json` version |

@@ -1,11 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import type { KibanaClient } from "../kibana_client.js";
+import type { KibanaClient } from "../kibana/client.js";
+import type { SchemaCatalog } from "../kibana/schema_catalog.js";
+import type { SourceCatalog } from "../kibana/source_catalog.js";
 import { compileQueryPlan } from "../query/compiler.js";
 import { normalizeQueryResponse } from "../query/normalize.js";
-import type { SchemaCatalog } from "../schema_catalog.js";
-import type { SourceCatalog } from "../source_catalog.js";
 
 const queryFilterSchema = z.object({
   field: z.string().min(1),
@@ -280,6 +280,7 @@ export async function executeQuery(
     resolveFieldAliases?: boolean;
     resolvePreferredExactFields?: boolean;
     schemaCatalog?: SchemaCatalog;
+    callerSignal?: AbortSignal;
   },
 ): Promise<z.infer<typeof queryOutputSchema>> {
   const sources = sourceCatalog.getRequiredSources(input.source_ids);
@@ -294,8 +295,11 @@ export async function executeQuery(
   if (schemaCatalog && needsSchemaResolution) {
     for (const source of sources) {
       try {
-        sourceSchemas.set(source.id, await schemaCatalog.getFields(source));
+        sourceSchemas.set(source.id, await schemaCatalog.getFields(source, options?.callerSignal));
       } catch (error) {
+        if (options?.callerSignal?.aborted) {
+          throw error;
+        }
         sourceSchemaErrors.set(source.id, error instanceof Error ? error.message : String(error));
       }
     }
@@ -306,7 +310,7 @@ export async function executeQuery(
     ...(sourceSchemas.size > 0 ? { sourceSchemas } : {}),
     ...(sourceSchemaErrors.size > 0 ? { sourceSchemaErrors } : {}),
   });
-  const executions = await kibanaClient.executeMany(plan.sourceQueries);
+  const executions = await kibanaClient.executeMany(plan.sourceQueries, options?.callerSignal);
   return queryOutputSchema.parse(normalizeQueryResponse(plan, executions));
 }
 

@@ -7,10 +7,10 @@ import {
   PROFILE_NAME_ENV,
   loadConfigFromEnvironment,
   parseAppConfig,
-  resolveSourceCatalogPath,
-} from "../src/config.js";
-import { resolveProfilePaths } from "../src/profile_paths.js";
-import { ProfileStore } from "../src/profile_store.js";
+} from "../src/config/environment.js";
+import { resolveProfilePaths } from "../src/profiles/paths.js";
+import { ProfileStore } from "../src/profiles/store.js";
+import { createGeneratedCatalog } from "../src/setup/bootstrap.js";
 
 const tempDirectories: string[] = [];
 
@@ -48,6 +48,52 @@ describe("parseAppConfig", () => {
     expect(config.kibana.timeoutMs).toBe(10000);
     expect(config.sources[0]?.id).toBe("app-logs");
     expect(config.sources[0]?.schema?.kind).toBe("kibana_data_views_fields");
+  });
+
+  it("accepts an empty managed source catalog for a connection-only bootstrap", () => {
+    const config = parseAppConfig(
+      {
+        KIBANA_BASE_URL: "https://kibana.example.com",
+        KIBANA_USERNAME: "elastic",
+        KIBANA_PASSWORD: "secret",
+      },
+      createGeneratedCatalog([]),
+    );
+
+    expect(config.sources).toEqual([]);
+  });
+
+  it("rejects an empty unmanaged catalog that configure_index cannot safely update", () => {
+    expect(() =>
+      parseAppConfig(
+        {
+          KIBANA_BASE_URL: "https://kibana.example.com",
+          KIBANA_USERNAME: "elastic",
+          KIBANA_PASSWORD: "secret",
+        },
+        { sources: [] },
+      ),
+    ).toThrow("Empty source catalogs must be managed");
+  });
+
+  it("rejects an empty catalog with invalid managed provenance", () => {
+    expect(() =>
+      parseAppConfig(
+        {
+          KIBANA_BASE_URL: "https://kibana.example.com",
+          KIBANA_USERNAME: "elastic",
+          KIBANA_PASSWORD: "secret",
+        },
+        {
+          generatedBy: {
+            tool: "@havesomecode/kibana-mcp-server",
+            formatVersion: 1,
+            sourceHash: "0".repeat(64),
+          },
+          sources: [],
+        },
+      ),
+    ).toThrow("valid managed provenance");
   });
 
   it("accepts schema metadata without an explicit path when the index is provided", () => {
@@ -107,15 +153,6 @@ describe("parseAppConfig", () => {
         },
       ),
     ).toThrow();
-  });
-
-  it("defaults the source catalog path to the runtime file", () => {
-    expect(resolveSourceCatalogPath({})).toBe("config/sources.runtime.json");
-    expect(
-      resolveSourceCatalogPath({
-        KIBANA_SOURCE_CATALOG_PATH: "config/custom.json",
-      } as NodeJS.ProcessEnv),
-    ).toBe("config/custom.json");
   });
 
   it("loads a saved default profile when no bootstrap environment is present", async () => {
@@ -258,6 +295,48 @@ describe("parseAppConfig", () => {
 });
 
 describe("loadConfigFromEnvironment", () => {
+  it("requires an explicit catalog path for an environment connection without reading implicit files", async () => {
+    const reads: unknown[] = [];
+    await expect(
+      loadConfigFromEnvironment(
+        {
+          KIBANA_BASE_URL: "https://kibana.example.com",
+          KIBANA_USERNAME: "elastic",
+          KIBANA_PASSWORD: "secret",
+        },
+        {
+          readFile: (async (path: unknown) => {
+            reads.push(path);
+            return JSON.stringify(createGeneratedCatalog([]));
+          }) as never,
+        },
+      ),
+    ).rejects.toThrow("KIBANA_SOURCE_CATALOG_PATH is required");
+    expect(reads).toEqual([]);
+  });
+
+  it("reads only the named catalog and propagates its filesystem error", async () => {
+    const error = Object.assign(new Error("catalog access denied"), { code: "EACCES" });
+    const reads: unknown[] = [];
+    await expect(
+      loadConfigFromEnvironment(
+        {
+          KIBANA_BASE_URL: "https://kibana.example.com",
+          KIBANA_USERNAME: "elastic",
+          KIBANA_PASSWORD: "secret",
+          KIBANA_SOURCE_CATALOG_PATH: "config/sources.runtime.json",
+        },
+        {
+          readFile: (async (path: unknown) => {
+            reads.push(path);
+            throw error;
+          }) as never,
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(reads).toEqual(["config/sources.runtime.json"]);
+  });
+
   it("loads config when KIBANA_TIMEOUT_MS is present", async () => {
     const catalogDirectory = await mkdtemp(join(tmpdir(), "kibana-mcp-server-"));
     tempDirectories.push(catalogDirectory);
